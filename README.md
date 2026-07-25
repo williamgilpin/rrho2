@@ -9,11 +9,52 @@ concordant up-up and down-down, and discordant up-down and down-up.
 
 ## Install
 
+Install directly from GitHub with `uv`:
+
 ```bash
-pip install -e ".[plot]"
+uv pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
 ```
 
-Requires numpy and scipy; matplotlib only for plotting.
+or with `pip`:
+
+```bash
+pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
+```
+
+To add it as a dependency of a `uv` project:
+
+```bash
+uv add "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
+```
+
+The `[plot]` extra pulls in matplotlib for `heatmap()` and `venn()`. Drop it if
+you only need the overlap map as an array:
+
+```bash
+uv pip install "rrho2 @ git+https://github.com/williamgilpin/rrho2"
+```
+
+Requires Python 3.9+. Core dependencies are numpy and scipy.
+
+To pin a specific commit, tag, or branch, append `@<ref>`:
+
+```bash
+uv pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2@v1.0.0"
+```
+
+### Development install
+
+To hack on the package or run the test suite, clone it and install in editable
+mode:
+
+```bash
+git clone https://github.com/williamgilpin/rrho2
+cd rrho2
+uv pip install -e ".[test]"
+```
+
+The `[test]` extra adds pytest, matplotlib, and pandas. With plain `pip`, use
+`pip install -e ".[test]"`.
 
 ## Input format
 
