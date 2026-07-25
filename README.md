@@ -1,0 +1,175 @@
+# RRHO2 Python port
+
+A Python port of the [R package RRHO2](https://github.com/RRHO2/RRHO2). Please cite the original authors of the R package if you use this Python port in published work. 
+See the [Citation](#citation) section below.
+
+Given two ranked gene lists, RRHO2 tests the overlap between every pair of
+prefixes and reports the result as a map with four meaningful quadrants:
+concordant up-up and down-down, and discordant up-down and down-up.
+
+## Install
+
+```bash
+pip install -e ".[plot]"
+```
+
+Requires numpy and scipy; matplotlib only for plotting.
+
+## Input format
+
+Two gene lists, each pairing an identifier with a score:
+
+- The score is conventionally `-log10(pvalue) * sign(effectSize)`, so
+  up-regulated genes score positive and down-regulated genes negative.
+- No missing values.
+- Both lists must contain exactly the same identifiers. Order does not matter.
+- Each list must contain both positive and negative scores, otherwise the map
+  has no up- or no down-regulated quadrant.
+
+A list may be a pandas `DataFrame` (identifiers in the first column, scores in
+the second), an `(n, 2)` array, or a `(names, values)` pair.
+
+## Quick start
+
+```python
+import numpy as np
+from rrho2 import rrho2
+
+rng = np.random.default_rng(15213)
+n_genes, n_de = 2000, 200
+genes = np.array([f"Gene{i}" for i in range(n_genes)])
+
+def scores():
+    """200 up-regulated, 200 down-regulated, the rest noise."""
+    up = -np.log10(rng.uniform(0, 0.05, n_de))
+    down = np.log10(rng.uniform(0, 0.05, n_de))
+    n_noise = n_genes - 2 * n_de
+    noise = -np.log10(rng.uniform(0, 1, n_noise)) * rng.choice([1, -1], n_noise)
+    return np.concatenate([up, down, noise])
+
+result = rrho2(
+    (genes, scores()),
+    (genes, scores()),
+    labels=("list1", "list2"),
+    log10=True,
+)
+
+print(result.hypermat.shape)                    # the overlap map
+print(result.genelist_dd.overlap[:10])          # genes down in both lists
+print(len(result.genelist_uu.overlap))          # up in both
+
+result.heatmap()        # needs matplotlib
+result.venn("dd")
+```
+
+## Output
+
+`rrho2` returns an `RRHO2Result`:
+
+- `hypermat` — the overlap map. Rows index list 1, columns index list 2, both
+  running from most up-regulated to most down-regulated. For `method="hyper"`
+  the values are `-log(p)`, or `-log10(p)` when `log10=True`; for
+  `method="fisher"` they are log odds ratios. The white separator strips
+  between quadrants are `nan`.
+- `genelist_uu`, `genelist_dd`, `genelist_ud`, `genelist_du` — the genes at the
+  most significant pixel of each quadrant. The first letter is the direction in
+  list 1, the second in list 2. Each has `.list1`, `.list2`, `.overlap`,
+  `.sizes`, and `.peak` (the pixel it was read from).
+- `genelist(quadrant)` — the same, by name.
+- `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` — the grid geometry.
+
+## Key parameters
+
+| parameter | default | meaning |
+| --- | --- | --- |
+| `stepsize` | `ceil(sqrt(n))` | genes between successive overlap tests |
+| `log10` | `False` | report `-log10(p)` instead of `-log(p)` |
+| `method` | `"hyper"` | `"hyper"` for p-values, `"fisher"` for log odds |
+| `multiple_testing` | `"none"` | `"none"`, `"BH"`, or `"BY"` |
+| `boundary` | `0.1` | width of the separator strip, as a fraction |
+| `labels` | `None` | two names used to annotate plots |
+| `population_offset` | `1` | `1` matches R; `0` is statistically correct |
+| `log_space_padjust` | `True` | avoid underflow in BH/BY; `False` matches R |
+
+The last two exist because the R implementation has quirks worth being able to
+opt out of. Both are documented in
+[docs/PORTING_NOTES.md](docs/PORTING_NOTES.md).
+
+## Tests
+
+```bash
+python -m pytest tests/
+```
+
+35 tests cover the API and the numerics and always run. A further 52 compare
+against the original R implementation; those are optional and skip unless the
+ground truth is present (see below). The run prints a clear notice when they
+skip, so a green suite never quietly means "a third of it did not run".
+
+## Validating against the R implementation
+
+The port is validated cell-by-cell and gene-by-gene against real R output across
+ten scenarios. That validation is reproducible, but it needs the upstream R
+sources, which are **not** redistributed here — this package is standalone, and
+the R code belongs to the upstream GPL-3.0 project.
+
+To run it yourself you need `R` on your `PATH` (no R packages required):
+
+```bash
+git clone --depth 1 https://github.com/RRHO2/RRHO2 /tmp/RRHO2
+cp -r /tmp/RRHO2/R .
+Rscript tests/r_reference/generate_reference.R
+python -m pytest tests/ --run-r-comparison
+```
+
+`R/` and the generated ground truth are both gitignored. Alternatively, point
+`RRHO2_R_SOURCE` at any directory containing `RRHO2_initialize.R` instead of
+copying it into the repo:
+
+```bash
+RRHO2_R_SOURCE=/tmp/RRHO2/R Rscript tests/r_reference/generate_reference.R
+```
+
+Flags:
+
+| flag | effect |
+| --- | --- |
+| *(none)* | run the comparison if ground truth exists, else skip with a notice |
+| `--run-r-comparison` | require it; exit with a usage error if it is missing |
+| `--no-r-comparison` | skip it even if the ground truth is present |
+
+Use `--run-r-comparison` in CI so a missing oracle fails the build instead of
+passing silently.
+
+## Relationship to the R package
+
+This is a standalone Python package, not a wrapper: it has no R dependency at
+runtime. On realistic transcriptome-sized inputs it runs 8-17x faster than the R
+original. Two bugs in the R implementation are fixed, and both fixes can
+be turned off to reproduce R exactly. Every difference, the measurements behind
+it, and the reasoning are recorded in
+[docs/PORTING_NOTES.md](docs/PORTING_NOTES.md).
+
+## Credit
+
+The RRHO2 method and its original R implementation are the work of Kelly M.
+Cahill, Zhiguang Huo, and colleagues:
+[github.com/RRHO2/RRHO2](https://github.com/RRHO2/RRHO2). This repository is an
+independent Python port of that package; the algorithm is theirs, and if you use
+it in published work, cite their papers, not this port.
+
+## Citation
+
+- Cahill, K. M., Huo, Z., Tseng, G. C., Logan, R. W., & Seney, M. L. (2018).
+  Improved identification of concordant and discordant gene expression
+  signatures using an updated rank-rank hypergeometric overlap approach.
+  *Scientific Reports*, 8(1), 1-11.
+- Plaisier, S. B., Taschereau, R., Wong, J. A., & Graeber, T. G. (2010).
+  Rank-rank hypergeometric overlap: identification of statistically significant
+  overlap between gene-expression signatures. *Nucleic Acids Research*, 38(17),
+  e169.
+
+## License
+
+GPL-3.0. As a port of a GPL-3.0 package, this is a derivative work and carries
+the same license.

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rrho2"
+version = "1.0.0"
+description = "Rank-Rank Hypergeometric Overlap (RRHO2), in which all four quadrants of the RRHO map are interpretable"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-only" }
+# Python port. The RRHO2 method and the original R implementation are the work
+# of Cahill et al.; see the "Credit" section of README.md.
+authors = [{ name = "Python port contributors" }]
+keywords = ["RRHO", "hypergeometric", "gene expression", "rank overlap", "bioinformatics"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.22",
+    "scipy>=1.9",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.5"]
+test = ["pytest>=7", "matplotlib>=3.5"]
+
+[project.urls]
+Homepage = "https://github.com/RRHO2/RRHO2"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_r_reference: needs ground truth generated from the upstream R package (see README.md)",
+]
