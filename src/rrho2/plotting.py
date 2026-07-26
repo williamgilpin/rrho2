@@ -154,12 +154,36 @@ def venn_diagram(
         _, ax = plt.subplots(figsize=(5.0, 4.0))
 
     radius, shift = 1.0, 0.65
-    for x, color in zip((-shift, shift), palette):
-        ax.add_patch(Circle((x, 0.0), radius, facecolor=color, alpha=0.55, linewidth=0))
+    # An empty quadrant means it cannot exist (a list is single-signed), not that
+    # the overlap was computed and came out zero. Say which, so three "0"s are
+    # not mistaken for a real result.
+    quadrant_exists = genes.peak is not None
 
-    ax.text(-shift - 0.45, 0, f"{n1 - n_overlap}", ha="center", va="center")
-    ax.text(0, 0, f"{n_overlap}", ha="center", va="center")
-    ax.text(shift + 0.45, 0, f"{n2 - n_overlap}", ha="center", va="center")
+    for x, color in zip((-shift, shift), palette):
+        ax.add_patch(
+            Circle(
+                (x, 0.0),
+                radius,
+                facecolor=color,
+                alpha=0.20 if not quadrant_exists else 0.55,
+                linewidth=0,
+            )
+        )
+
+    if quadrant_exists:
+        ax.text(-shift - 0.45, 0, f"{n1 - n_overlap}", ha="center", va="center")
+        ax.text(0, 0, f"{n_overlap}", ha="center", va="center")
+        ax.text(shift + 0.45, 0, f"{n2 - n_overlap}", ha="center", va="center")
+    else:
+        ax.text(
+            0,
+            0,
+            "quadrant does not exist\n(scores are single-signed)",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="0.35",
+        )
     ax.text(-shift, radius + 0.12, labels[0], ha="center", va="bottom", fontsize=11)
     ax.text(shift, radius + 0.12, labels[1], ha="center", va="bottom", fontsize=11)
 

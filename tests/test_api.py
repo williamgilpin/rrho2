@@ -219,17 +219,38 @@ def test_drop_nan_rejects_all_missing(lists):
 
 
 def test_drop_nan_still_enforces_other_validation(lists):
-    """Duplicates and mismatched gene sets are unaffected by drop_nan."""
+    """Duplicate identifiers remain an error regardless of drop_nan."""
     l1, l2 = lists
     dup = l1[0].copy()
     dup[1] = dup[0]
     with pytest.raises(ValueError, match="Non-unique gene identifier"):
         rrho2((dup, l1[1]), l2, drop_nan=True)
 
-    other = l2[0].copy()
-    other[0] = "NotInList1"
-    with pytest.raises(ValueError, match="must be identical"):
-        rrho2(l1, (other, l2[1]), drop_nan=True)
+
+def test_drop_nan_composes_with_intersection(lists):
+    """NaN dropping and the shared-gene restriction stack correctly."""
+    l1, l2 = lists
+    names, values1 = l1
+    values2 = l2[1].copy()
+
+    with_nan = values1.copy()
+    with_nan[[0, 1]] = np.nan       # dropped for being missing
+    trimmed_names = names[:-3]      # last 3 genes absent from list2
+    trimmed_values = values2[:-3]
+
+    result = rrho2(
+        (names, with_nan), (trimmed_names, trimmed_values), drop_nan=True
+    )
+    assert result.n_dropped == 2
+    assert result.n_unshared == 3
+    assert result.n_genes == len(names) - 5
+
+    # Equivalent to filtering both out by hand.
+    keep = np.ones(len(names), dtype=bool)
+    keep[[0, 1]] = False
+    keep[-3:] = False
+    manual = rrho2((names[keep], values1[keep]), (names[keep], values2[keep]))
+    np.testing.assert_allclose(result.hypermat, manual.hypermat, equal_nan=True)
 
 
 def test_drop_nan_with_pandas_na(lists):
@@ -243,12 +264,15 @@ def test_drop_nan_with_pandas_na(lists):
     assert result.n_genes == len(l1[0]) - 2
 
 
-def test_rejects_mismatched_gene_sets(lists):
+def test_mismatched_gene_sets_are_intersected(lists):
+    """Genes present in only one list are dropped, not an error."""
     l1, l2 = lists
     other = l2[0].copy()
     other[0] = "NotInList1"
-    with pytest.raises(ValueError, match="gene names of the two lists must be identical"):
-        rrho2(l1, (other, l2[1]))
+    result = rrho2(l1, (other, l2[1]))
+    # One gene left list2's set and one arrived, so two are unshared.
+    assert result.n_unshared == 2
+    assert result.n_genes == len(l1[0]) - 1
 
 
 def test_rejects_bad_arguments(lists):
@@ -265,18 +289,194 @@ def test_rejects_bad_arguments(lists):
         rrho2(l1, l2, method="fisher", multiple_testing="BH")
 
 
-def test_rejects_single_signed_scores(lists):
-    """R would silently build a malformed map; the port refuses instead.
+def test_single_signed_scores_warn_and_build_partial_map(lists):
+    """A single-signed list has no direction split, so two quadrants are empty.
 
-    With no negative scores there is no down-regulated block, and R's
-    ``(boundary+1):len`` index counts backwards rather than being empty.
+    R indexes with ``(boundary+1):len``, which counts backwards rather than being
+    empty, and produces a malformed map. The port builds the quadrants that do
+    exist and warns.
     """
     l1, l2 = lists
     all_positive = np.abs(l1[1])
-    with pytest.raises(ValueError, match="no.*down-regulated quadrant"):
-        rrho2((l1[0], all_positive), l2)
-    with pytest.raises(ValueError, match="no.*up-regulated quadrant"):
-        rrho2((l1[0], -all_positive), l2)
+
+    with pytest.warns(RuntimeWarning, match="no down-regulated block"):
+        result = rrho2((l1[0], all_positive), l2)
+    # list1 has no down block, so dd and du cannot exist.
+    assert result.genelist_dd.peak is None
+    assert result.genelist_du.peak is None
+    assert result.genelist_uu.peak is not None
+    assert result.genelist_ud.peak is not None
+
+    with pytest.warns(RuntimeWarning, match="no up-regulated block"):
+        flipped = rrho2((l1[0], -all_positive), l2)
+    assert flipped.genelist_uu.peak is None
+    assert flipped.genelist_ud.peak is None
+    assert flipped.genelist_dd.peak is not None
+    assert flipped.genelist_du.peak is not None
+
+
+# --------------------------------------------------------------------------
+# Shared-gene intersection
+# --------------------------------------------------------------------------
+
+
+def test_intersection_equals_pre_filtering_by_hand(lists):
+    """Restricting to shared genes matches never passing the extras."""
+    l1, l2 = lists
+    names, values1 = l1
+    values2 = l2[1]
+
+    # list2 loses the first 20 genes and gains 12 that list1 never had.
+    keep = np.ones(len(names), dtype=bool)
+    keep[:20] = False
+    rng = np.random.default_rng(4)
+    extra_names = np.array([f"Only2_{i}" for i in range(12)], dtype=object)
+    extra_values = rng.normal(size=12)
+    names2 = np.concatenate([names[keep], extra_names])
+    values2b = np.concatenate([values2[keep], extra_values])
+
+    result = rrho2((names, values1), (names2, values2b))
+    assert result.n_unshared == 20 + 12
+    assert result.n_genes == len(names) - 20
+
+    manual = rrho2((names[keep], values1[keep]), (names[keep], values2[keep]))
+    np.testing.assert_allclose(result.hypermat, manual.hypermat, equal_nan=True)
+    assert result.stepsize == manual.stepsize
+    for quadrant in QUADRANTS:
+        np.testing.assert_array_equal(
+            result.genelist(quadrant).overlap, manual.genelist(quadrant).overlap
+        )
+
+
+def test_intersection_never_reports_unshared_genes(lists):
+    l1, l2 = lists
+    names = l1[0]
+    extra = np.array(["Ghost1", "Ghost2"], dtype=object)
+    names2 = np.concatenate([names, extra])
+    values2 = np.concatenate([l2[1], [5.0, -5.0]])
+
+    result = rrho2(l1, (names2, values2))
+    assert result.n_unshared == 2
+    for quadrant in QUADRANTS:
+        genes = result.genelist(quadrant)
+        assert not (set(genes.list1) & set(extra.tolist()))
+        assert not (set(genes.list2) & set(extra.tolist()))
+
+
+def test_identical_lists_report_no_unshared(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2)
+    assert result.n_unshared == 0
+    assert result.n_genes == len(l1[0])
+
+
+def test_intersection_is_order_independent(lists):
+    l1, l2 = lists
+    names = l1[0]
+    keep = np.ones(len(names), dtype=bool)
+    keep[5:15] = False
+    rng = np.random.default_rng(6)
+    perm = rng.permutation(int(keep.sum()))
+
+    ordered = rrho2(l1, (names[keep], l2[1][keep]))
+    shuffled = rrho2(l1, (names[keep][perm], l2[1][keep][perm]))
+    np.testing.assert_allclose(ordered.hypermat, shuffled.hypermat, equal_nan=True)
+    assert ordered.n_unshared == shuffled.n_unshared == 10
+
+
+def test_disjoint_gene_sets_raise(lists):
+    l1, l2 = lists
+    other = np.array([f"Other{i}" for i in range(len(l1[0]))], dtype=object)
+    with pytest.raises(ValueError, match="no gene identifiers in common"):
+        rrho2(l1, (other, l2[1]))
+
+
+# --------------------------------------------------------------------------
+# Single-signed lists
+# --------------------------------------------------------------------------
+
+
+def test_strictly_positive_lists_yield_one_populated_quadrant(lists):
+    """The exact degenerate edge: boundary == len, so only uu can exist."""
+    l1, _ = lists
+    names = l1[0]
+    rng = np.random.default_rng(8)
+    a = rng.uniform(0.5, 10.0, len(names))
+    b = rng.uniform(0.5, 10.0, len(names))
+
+    with pytest.warns(RuntimeWarning, match="no down-regulated block"):
+        result = rrho2((names, a), (names, b))
+
+    n_steps = len(np.arange(1, len(names) + 1, result.stepsize))
+    assert result.boundary1 == result.boundary2 == n_steps
+
+    # uu covers the whole grid; the other three are empty.
+    assert result.genelist_uu.peak is not None
+    assert len(result.genelist_uu.overlap) > 0
+    for quadrant in ("dd", "ud", "du"):
+        genes = result.genelist(quadrant)
+        assert genes.peak is None
+        assert genes.sizes == (0, 0, 0)
+
+    populated = ~np.isnan(result.hypermat)
+    assert populated.sum() == n_steps * n_steps
+
+
+def test_strictly_negative_lists_yield_only_dd(lists):
+    l1, _ = lists
+    names = l1[0]
+    rng = np.random.default_rng(10)
+    a = -rng.uniform(0.5, 10.0, len(names))
+    b = -rng.uniform(0.5, 10.0, len(names))
+
+    with pytest.warns(RuntimeWarning, match="no up-regulated block"):
+        result = rrho2((names, a), (names, b))
+
+    assert result.boundary1 == result.boundary2 == 0
+    assert result.genelist_dd.peak is not None
+    assert len(result.genelist_dd.overlap) > 0
+    for quadrant in ("uu", "ud", "du"):
+        assert result.genelist(quadrant).peak is None
+
+
+def test_one_single_signed_list_keeps_two_quadrants(lists):
+    """Only the offending list loses its block; the other still splits."""
+    l1, l2 = lists
+    with pytest.warns(RuntimeWarning, match="list1 has no down-regulated block"):
+        result = rrho2((l1[0], np.abs(l1[1])), l2)
+
+    # list2 still has both directions, so uu and ud survive.
+    assert result.genelist_uu.peak is not None
+    assert result.genelist_ud.peak is not None
+    assert result.genelist_dd.peak is None
+    assert result.genelist_du.peak is None
+    assert 0 < result.boundary2 < len(
+        np.arange(1, result.n_genes + 1, result.stepsize)
+    )
+
+
+def test_single_signed_map_still_plots(lists):
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    l1, l2 = lists
+    with pytest.warns(RuntimeWarning):
+        result = rrho2((l1[0], np.abs(l1[1])), l2, labels=("a", "b"))
+    result.heatmap()
+    for quadrant in QUADRANTS:
+        result.venn(quadrant)  # including the empty ones
+    plt.close("all")
+
+
+def test_normal_signed_data_emits_no_warning(lists):
+    """The warning must not fire for well-formed input."""
+    import warnings
+
+    l1, l2 = lists
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        rrho2(l1, l2)
 
 
 # --------------------------------------------------------------------------

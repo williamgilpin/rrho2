@@ -162,15 +162,47 @@ and can be negative, so the result is meaningless. The port raises `ValueError`
 rather than reproduce it. `method="fisher"` with `multiple_testing="none"` is
 unaffected and matches R.
 
-### 8. Single-signed scores now raise (opt-out: none)
+### 8. Single-signed scores build a partial map and warn
 
 If no grid point has a positive score, R's `1:boundary1` becomes `1:0` — the
-two-element vector `c(1, 0)` — and `(boundary1+1):len1` counts backwards.
-The result is a silently malformed map rather than an error.
+two-element vector `c(1, 0)` — and `(boundary1+1):len1` counts backwards. The
+result is a silently malformed map.
 
-Both lists must contain positive and negative scores for the four quadrants to
-exist, so the port raises `ValueError` with an explanation. This turns silent
-corruption into a clear failure; it cannot change a previously-correct result.
+A single-signed list genuinely has no direction split, so two of the four
+quadrants have no genes to rank. The port builds the quadrants that do exist,
+leaves the impossible ones as `nan` with `peak=None` and empty gene lists, and
+emits a `RuntimeWarning` naming the offending list. Nothing raises.
+
+Two details this required:
+
+- Quadrants II and IV read from the list-1-reversed map with mirrored row ranges.
+  These are now written as explicit slices: `flipx[len1 - boundary1 : len1]`
+  rather than `flipx[len1 - boundary1 :]`, because at `boundary1 == 0` the
+  open-ended form selects the whole array instead of nothing.
+- `_peak_pixel` returns `None` for a zero-size quadrant instead of calling
+  `np.nanmax` on an empty array.
+
+`venn()` labels an impossible quadrant rather than drawing three zeros, which
+would read as "computed, found no overlap".
+
+The usual cause is unsigned input — raw `-log10(pvalue)` without
+`* sign(effect)` — so the warning says so. This cannot change a
+previously-correct result: the affected inputs used to raise.
+
+### 8b. Non-identical gene lists are intersected
+
+R stops with `"The gene names of the two lists must be identical."` The port
+reduces both lists to the genes they share and proceeds, reporting the count as
+`result.n_unshared`.
+
+As with `drop_nan`, the guarantee is equivalence to filtering by hand
+(`test_intersection_equals_pre_filtering_by_hand`): the hypergeometric population
+is the size of the shared set, and the default `stepsize` re-derives from it, so
+p-values stay calibrated against the genes actually ranked.
+
+Filtering keys on the identifier, and each list keeps its own ordering — only
+membership changes. Wholly disjoint lists still raise, since no comparison is
+possible; the message points at mismatched identifier types, the usual cause.
 
 ### 9. `population_offset` (default: 1, matching R)
 

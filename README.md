@@ -63,9 +63,11 @@ Two gene lists, each pairing an identifier with a score:
 - The score is conventionally `-log10(pvalue) * sign(effectSize)`, so
   up-regulated genes score positive and down-regulated genes negative.
 - No missing values, unless you pass `drop_nan=True` (see below).
-- Both lists must contain exactly the same identifiers. Order does not matter.
-- Each list must contain both positive and negative scores, otherwise the map
-  has no up- or no down-regulated quadrant.
+- Identifiers must be unique within each list. The two lists need not hold the
+  same genes — they are reduced to the ones they share.
+- Each list should contain both positive and negative scores. If one does not,
+  the map is still built but two of its four quadrants cannot exist (see
+  [Single-signed scores](#single-signed-scores)).
 
 A list may be a pandas `DataFrame` (identifiers in the first column, scores in
 the second), an `(n, 2)` array, or a `(names, values)` pair.
@@ -92,6 +94,41 @@ cleanly in list 1 is still discarded if list 2 is missing it. That is the
 statistically honest choice for a rank-rank method, but if one list is much
 patchier than the other, check `result.n_dropped` before reading much into the
 map.
+
+### Lists with different genes
+
+The two lists do not have to contain the same genes. Genes present in only one
+list are dropped, and the map is built on the shared set:
+
+```python
+result = rrho2(list1, list2)
+print(result.n_unshared, "genes were in only one list;", result.n_genes, "compared")
+```
+
+As with `drop_nan`, this is exactly equivalent to intersecting the lists before
+calling `rrho2`: the hypergeometric population is the size of the shared set, so
+p-values are calibrated against the genes actually being ranked.
+
+Two lists with *no* genes in common raise, since there is nothing to compare —
+usually a sign the lists use different identifier types (symbols vs Ensembl IDs).
+A large `n_unshared` is worth checking for the same reason.
+
+### Single-signed scores
+
+RRHO2 splits each list at zero to separate up- from down-regulated genes. If a
+list is entirely positive (or entirely negative) there is no split, so two of the
+four quadrants have no genes to rank. Rather than fail, `rrho2` builds the
+quadrants that do exist, warns, and marks the others as empty:
+
+```python
+result.genelist_dd.peak      # None -- this quadrant cannot exist
+result.genelist_dd.sizes     # (0, 0, 0)
+```
+
+Their cells are `nan` in `hypermat`, and `venn()` labels them rather than drawing
+three misleading zeros. The usual cause is passing unsigned scores — raw
+`-log10(pvalue)` without the `* sign(effectSize)` — in which case the fix is to
+sign them, not to read the partial map.
 
 ## Quick start
 
@@ -138,11 +175,13 @@ result.venn("dd")
 - `genelist_uu`, `genelist_dd`, `genelist_ud`, `genelist_du` — the genes at the
   most significant pixel of each quadrant. The first letter is the direction in
   list 1, the second in list 2. Each has `.list1`, `.list2`, `.overlap`,
-  `.sizes`, and `.peak` (the pixel it was read from).
+  `.sizes`, and `.peak` (the pixel it was read from, or `None` if the quadrant
+  cannot exist).
 - `genelist(quadrant)` — the same, by name.
 - `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` — the grid geometry.
-- `n_genes`, `n_dropped` — genes actually ranked, and how many `drop_nan`
-  discarded.
+- `n_genes` — genes actually ranked, after all filtering.
+- `n_dropped` — genes discarded for having a missing score (`drop_nan`).
+- `n_unshared` — genes discarded for appearing in only one list.
 
 ## Key parameters
 

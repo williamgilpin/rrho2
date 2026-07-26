@@ -29,8 +29,9 @@ class QuadrantGenes:
     list1: np.ndarray
     list2: np.ndarray
     overlap: np.ndarray
-    #: 0-based position of the peak pixel within ``RRHO2Result.hypermat``.
-    peak: Tuple[int, int]
+    #: 0-based position of the peak pixel within ``RRHO2Result.hypermat``, or
+    #: ``None`` if the quadrant is empty because a list is single-signed.
+    peak: Optional[Tuple[int, int]]
 
     def __len__(self) -> int:
         return len(self.overlap)
@@ -69,10 +70,12 @@ class RRHO2Result:
     boundary2: int
     strip1: int
     strip2: int
-    #: Genes ranked in the map, after any ``drop_nan`` removal.
+    #: Genes ranked in the map, after dropping missing and unshared genes.
     n_genes: int = 0
     #: Genes discarded because their score was missing in one or both lists.
     n_dropped: int = 0
+    #: Genes discarded because they appeared in only one of the two lists.
+    n_unshared: int = 0
     counts: Optional[np.ndarray] = field(default=None, repr=False)
 
     def genelist(self, quadrant: str) -> QuadrantGenes:
@@ -173,14 +176,52 @@ def _drop_nan_genes(
     return names1, values1, names2, values2, len(bad)
 
 
-def _peak_pixel(mat: np.ndarray, rows: slice, cols: slice) -> Tuple[int, int]:
+def _restrict_to_shared_genes(
+    names1: np.ndarray,
+    values1: np.ndarray,
+    names2: np.ndarray,
+    values2: np.ndarray,
+):
+    """Reduce both lists to the genes they have in common.
+
+    RRHO2 compares two rankings of one gene set, so a gene present in only one
+    list has no counterpart to be ranked against. Each list keeps its own order;
+    only membership is filtered.
+    """
+    set1 = set(names1.tolist())
+    set2 = set(names2.tolist())
+    if set1 == set2:
+        return names1, values1, names2, values2, 0
+
+    shared = set1 & set2
+    if not shared:
+        raise ValueError(
+            "The two lists have no gene identifiers in common, so there is nothing "
+            "to compare. Check that both lists use the same identifier type "
+            "(e.g. symbols vs Ensembl IDs)."
+        )
+
+    keep1 = np.array([name in shared for name in names1.tolist()], dtype=bool)
+    keep2 = np.array([name in shared for name in names2.tolist()], dtype=bool)
+    n_unshared = len(set1 ^ set2)
+    return names1[keep1], values1[keep1], names2[keep2], values2[keep2], n_unshared
+
+
+def _peak_pixel(
+    mat: np.ndarray, rows: slice, cols: slice
+) -> Optional[Tuple[int, int]]:
     """0-based index of the largest cell in a submatrix, ties broken as in R.
 
     R locates the peak with ``which(max(quadrant) == hypermat, arr.ind = TRUE)``
     and takes the first row, so ties resolve in column-major order: lowest
     column first, then lowest row.
+
+    Returns ``None`` for a quadrant with no cells, which happens when a list is
+    single-signed and so has no up- or no down-regulated block.
     """
     sub = mat[rows, cols]
+    if sub.size == 0:
+        return None
     peak = np.nanmax(sub)
     # argwhere on the transpose scans columns before rows.
     col, row = np.argwhere(sub.T == peak)[0]
@@ -217,8 +258,10 @@ def rrho2(
     list1, list2
         Gene lists as a pandas ``DataFrame`` (identifier column, then score
         column), an ``(n, 2)`` array-like, or a ``(names, values)`` pair. Scores
-        are typically ``-log10(pvalue) * sign(effect)``. Both lists must contain
-        exactly the same identifiers, in any order, with no missing values.
+        are typically ``-log10(pvalue) * sign(effect)``. Identifiers must be
+        unique within each list, but the two lists need not hold the same genes:
+        they are restricted to the genes they share, counted in
+        ``result.n_unshared``. Missing scores are an error unless ``drop_nan``.
     stepsize
         Elements between successive overlap tests. Defaults to
         ``ceil(sqrt(n))``.
@@ -279,14 +322,16 @@ def rrho2(
     names2, values2 = _as_gene_list(list2, "list2")
     _validate(names1, values1, "list1", drop_nan)
     _validate(names2, values2, "list2", drop_nan)
-    if set(names1.tolist()) != set(names2.tolist()):
-        raise ValueError("The gene names of the two lists must be identical.")
 
     n_dropped = 0
     if drop_nan:
         names1, values1, names2, values2, n_dropped = _drop_nan_genes(
             names1, values1, names2, values2
         )
+
+    names1, values1, names2, values2, n_unshared = _restrict_to_shared_genes(
+        names1, values1, names2, values2
+    )
 
     # Descending score; a stable sort leaves ties in input order, as R's
     # order(decreasing = TRUE) does.
@@ -324,16 +369,26 @@ def rrho2(
     # Grid points whose score is still positive, i.e. the up-regulated block.
     boundary1 = int(np.sum(values1[prefix1 - 1] > 0))
     boundary2 = int(np.sum(values2[prefix2 - 1] > 0))
+    # A single-signed list has no direction split, so two of the four quadrants
+    # cannot exist. Build what does exist rather than refusing outright, but say
+    # so: the usual cause is passing unsigned scores (raw -log10 p-values) and
+    # forgetting to multiply by sign(effect).
     for value, total, which in ((boundary1, len1, "list1"), (boundary2, len2, "list2")):
         if value == 0:
-            raise ValueError(
-                f"No grid point of {which} has a positive score, so the map has no "
-                "up-regulated quadrant. Check the sign convention of the scores."
+            warnings.warn(
+                f"No grid point of {which} has a positive score, so {which} has no "
+                "up-regulated block and two of the four quadrants are empty. Scores "
+                "should be signed, e.g. -log10(pvalue) * sign(effect).",
+                RuntimeWarning,
+                stacklevel=2,
             )
-        if value == total:
-            raise ValueError(
-                f"Every grid point of {which} has a positive score, so the map has no "
-                "down-regulated quadrant. Check the sign convention of the scores."
+        elif value == total:
+            warnings.warn(
+                f"Every grid point of {which} has a positive score, so {which} has no "
+                "down-regulated block and two of the four quadrants are empty. Scores "
+                "should be signed, e.g. -log10(pvalue) * sign(effect).",
+                RuntimeWarning,
+                stacklevel=2,
             )
 
     up1, up2 = slice(0, boundary1), slice(0, boundary2)
@@ -345,10 +400,14 @@ def rrho2(
     hypermat[up1, up2] = hypermat_normal[:boundary1, :boundary2]
     # quadrant I: down in 1, down in 2
     hypermat[down1, down2] = hypermat_normal[boundary1:, boundary2:]
-    # quadrant II: up in 1, down in 2 -- read from the list-1-reversed map
-    hypermat[up1, down2] = hypermat_flipx[len1 - boundary1 :, boundary2:][::-1]
+    # Quadrants II and IV read from the list-1-reversed map, so their row ranges
+    # are mirrored. Written as explicit slices rather than open-ended ones,
+    # because `flipx[len1 - 0:]` would be the whole array instead of nothing when
+    # a list is single-signed and boundary1 collapses to 0 or len1.
+    # quadrant II: up in 1, down in 2
+    hypermat[up1, down2] = hypermat_flipx[len1 - boundary1 : len1, boundary2:][::-1]
     # quadrant IV: down in 1, up in 2
-    hypermat[down1, up2] = hypermat_flipx[: len1 - boundary1, :boundary2][::-1]
+    hypermat[down1, up2] = hypermat_flipx[0 : len1 - boundary1, :boundary2][::-1]
 
     if np.any(np.isinf(hypermat[~np.isnan(hypermat)])):
         warnings.warn(
@@ -366,10 +425,18 @@ def rrho2(
     start1 = prefix1 - 1
     start2 = prefix2 - 1
 
+    empty = np.array([], dtype=names1.dtype)
+
     def build(quadrant: str) -> QuadrantGenes:
         rows = up1 if quadrant[0] == "u" else down1
         cols = up2 if quadrant[1] == "u" else down2
-        row, col = _peak_pixel(hypermat, rows, cols)
+        found = _peak_pixel(hypermat, rows, cols)
+        if found is None:
+            # The quadrant has no cells: one of the lists is single-signed.
+            return QuadrantGenes(
+                list1=empty, list2=empty, overlap=empty, peak=None
+            )
+        row, col = found
         if quadrant[0] == "u":
             genes1 = names1[: start1[row] + 1]
         else:
@@ -401,6 +468,7 @@ def rrho2(
         strip2=strip2,
         n_genes=n,
         n_dropped=n_dropped,
+        n_unshared=n_unshared,
         counts=normal["counts"] if return_counts else None,
     )
 
