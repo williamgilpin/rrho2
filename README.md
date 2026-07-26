@@ -9,8 +9,6 @@ concordant up-up and down-down, and discordant up-down and down-up.
 
 ## Install
 
-Install directly from GitHub with `uv`:
-
 ```bash
 uv pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
 ```
@@ -21,114 +19,25 @@ or with `pip`:
 pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
 ```
 
-To add it as a dependency of a `uv` project:
+The `[plot]` extra adds matplotlib, needed only for `heatmap()` and `venn()`.
+Requires Python 3.9+; core dependencies are numpy and scipy.
+
+For development, clone and install editable with the test extra:
 
 ```bash
-uv add "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2"
-```
-
-The `[plot]` extra pulls in matplotlib for `heatmap()` and `venn()`. Drop it if
-you only need the overlap map as an array:
-
-```bash
-uv pip install "rrho2 @ git+https://github.com/williamgilpin/rrho2"
-```
-
-Requires Python 3.9+. Core dependencies are numpy and scipy.
-
-To pin a specific commit, tag, or branch, append `@<ref>`:
-
-```bash
-uv pip install "rrho2[plot] @ git+https://github.com/williamgilpin/rrho2@v1.0.0"
-```
-
-### Development install
-
-To hack on the package or run the test suite, clone it and install in editable
-mode:
-
-```bash
-git clone https://github.com/williamgilpin/rrho2
-cd rrho2
 uv pip install -e ".[test]"
 ```
 
-The `[test]` extra adds pytest, matplotlib, and pandas. With plain `pip`, use
-`pip install -e ".[test]"`.
-
 ## Input format
 
-Two gene lists, each pairing an identifier with a score:
+Two gene lists, each pairing a gene identifier with a score. The score is
+conventionally `-log10(pvalue) * sign(effectSize)`, so up-regulated genes are
+positive and down-regulated genes negative.
 
-- The score is conventionally `-log10(pvalue) * sign(effectSize)`, so
-  up-regulated genes score positive and down-regulated genes negative.
-- No missing values, unless you pass `drop_nan=True` (see below).
-- Identifiers must be unique within each list. The two lists need not hold the
-  same genes — they are reduced to the ones they share.
-- Each list should contain both positive and negative scores. If one does not,
-  the map is still built but two of its four quadrants cannot exist (see
-  [Single-signed scores](#single-signed-scores)).
-
-A list may be a pandas `DataFrame` (identifiers in the first column, scores in
-the second), an `(n, 2)` array, or a `(names, values)` pair.
-
-### Missing values
-
-By default a `nan` score is an error, since a missing value has no rank. To drop
-those genes instead:
-
-```python
-result = rrho2(list1, list2, drop_nan=True)
-print(result.n_dropped, "genes dropped;", result.n_genes, "ranked")
-```
-
-Because RRHO2 ranks the *same* gene set twice, a gene whose score is missing in
-**either** list is dropped from **both**, and the map is built on the surviving
-intersection. This is exactly equivalent to never having passed those genes: the
-hypergeometric population becomes the reduced size, so p-values stay correctly
-calibrated rather than being computed against a universe that includes genes the
-map cannot rank.
-
-Note that this makes `drop_nan=True` slightly conservative — a gene measured
-cleanly in list 1 is still discarded if list 2 is missing it. That is the
-statistically honest choice for a rank-rank method, but if one list is much
-patchier than the other, check `result.n_dropped` before reading much into the
-map.
-
-### Lists with different genes
-
-The two lists do not have to contain the same genes. Genes present in only one
-list are dropped, and the map is built on the shared set:
-
-```python
-result = rrho2(list1, list2)
-print(result.n_unshared, "genes were in only one list;", result.n_genes, "compared")
-```
-
-As with `drop_nan`, this is exactly equivalent to intersecting the lists before
-calling `rrho2`: the hypergeometric population is the size of the shared set, so
-p-values are calibrated against the genes actually being ranked.
-
-Two lists with *no* genes in common raise, since there is nothing to compare —
-usually a sign the lists use different identifier types (symbols vs Ensembl IDs).
-A large `n_unshared` is worth checking for the same reason.
-
-### Single-signed scores
-
-RRHO2 splits each list at zero to separate up- from down-regulated genes. If a
-list is entirely positive (or entirely negative) there is no split, so two of the
-four quadrants have no genes to rank. Rather than fail, `rrho2` builds the
-quadrants that do exist, warns, and marks the others as empty:
-
-```python
-result.genelist_dd.peak      # None -- this quadrant cannot exist
-result.genelist_dd.sizes     # (0, 0, 0)
-```
-
-Their cells are `nan` in `hypermat`, and `venn()` labels them rather than drawing
-three misleading zeros. The usual cause is passing unsigned scores — raw
-`-log10(pvalue)` without the `* sign(effectSize)` — in which case the fix is to
-sign them, not to read the partial map.
+A list may be a pandas `DataFrame` (identifiers first, scores second), an
+`(n, 2)` array, or a `(names, values)` pair. Identifiers must be unique within a
+list; the two lists need not contain the same genes, and are reduced to those
+they share. Gene order does not matter.
 
 ## Quick start
 
@@ -167,21 +76,14 @@ result.venn("dd")
 
 `rrho2` returns an `RRHO2Result`:
 
-- `hypermat` — the overlap map. Rows index list 1, columns index list 2, both
-  running from most up-regulated to most down-regulated. For `method="hyper"`
-  the values are `-log(p)`, or `-log10(p)` when `log10=True`; for
-  `method="fisher"` they are log odds ratios. The white separator strips
-  between quadrants are `nan`.
-- `genelist_uu`, `genelist_dd`, `genelist_ud`, `genelist_du` — the genes at the
-  most significant pixel of each quadrant. The first letter is the direction in
-  list 1, the second in list 2. Each has `.list1`, `.list2`, `.overlap`,
-  `.sizes`, and `.peak` (the pixel it was read from, or `None` if the quadrant
-  cannot exist).
-- `genelist(quadrant)` — the same, by name.
-- `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` — the grid geometry.
-- `n_genes` — genes actually ranked, after all filtering.
-- `n_dropped` — genes discarded for having a missing score (`drop_nan`).
-- `n_unshared` — genes discarded for appearing in only one list.
+| attribute | what it holds |
+| --- | --- |
+| `hypermat` | the overlap map as a NumPy array; rows index list 1, columns list 2, both running most-up to most-down. Separator strips are `nan`. |
+| `genelist_uu` / `_dd` / `_ud` / `_du` | genes at the most significant pixel of each quadrant (first letter = direction in list 1). Each has `.list1`, `.list2`, `.overlap`, `.sizes`, `.peak`. |
+| `genelist(q)` | the same, by name |
+| `quadrant_map(q)`, `rank_cutoffs(q)`, `quadrant_peaks()` | one quadrant as an array plus its axis labels, for plotting it yourself |
+| `n_genes`, `n_dropped`, `n_unshared` | genes ranked, and how many were dropped as missing or unshared |
+| `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` | grid geometry |
 
 ## Key parameters
 
@@ -215,11 +117,9 @@ skip, so a green suite never quietly means "a third of it did not run".
 ## Validating against the R implementation
 
 The port is validated cell-by-cell and gene-by-gene against real R output across
-ten scenarios. That validation is reproducible, but it needs the upstream R
-sources, which are **not** redistributed here — this package is standalone, and
-the R code belongs to the upstream GPL-3.0 project.
-
-To run it yourself you need `R` on your `PATH` (no R packages required):
+ten scenarios. Those tests need the upstream R sources, which are not
+redistributed here, so they skip unless you fetch them (with `R` on your `PATH`;
+no R packages required):
 
 ```bash
 git clone --depth 1 https://github.com/RRHO2/RRHO2 /tmp/RRHO2
@@ -228,24 +128,9 @@ Rscript tests/r_reference/generate_reference.R
 python -m pytest tests/ --run-r-comparison
 ```
 
-`R/` and the generated ground truth are both gitignored. Alternatively, point
-`RRHO2_R_SOURCE` at any directory containing `RRHO2_initialize.R` instead of
-copying it into the repo:
-
-```bash
-RRHO2_R_SOURCE=/tmp/RRHO2/R Rscript tests/r_reference/generate_reference.R
-```
-
-Flags:
-
-| flag | effect |
-| --- | --- |
-| *(none)* | run the comparison if ground truth exists, else skip with a notice |
-| `--run-r-comparison` | require it; exit with a usage error if it is missing |
-| `--no-r-comparison` | skip it even if the ground truth is present |
-
-Use `--run-r-comparison` in CI so a missing oracle fails the build instead of
-passing silently.
+`R/` and the generated ground truth are both gitignored. `--run-r-comparison`
+makes a missing oracle a hard error instead of a skip, which is what you want in
+CI; `--no-r-comparison` skips these tests even when the data is present.
 
 ## Relationship to the R package
 

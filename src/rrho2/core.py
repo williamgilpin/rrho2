@@ -96,6 +96,84 @@ class RRHO2Result:
 
         return venn_diagram(self, quadrant, **kwargs)
 
+    # -- Array access, for plotting with something other than .heatmap() ----
+
+    def quadrant_slices(self, quadrant: str) -> Tuple[slice, slice]:
+        """``(rows, cols)`` slices locating one quadrant inside ``hypermat``.
+
+        Rows index list 1, columns index list 2.
+        """
+        if quadrant not in QUADRANTS:
+            raise ValueError(f"quadrant must be one of {QUADRANTS}, got {quadrant!r}")
+        rows, cols = self.hypermat.shape
+        up1 = slice(0, self.boundary1)
+        up2 = slice(0, self.boundary2)
+        down1 = slice(self.strip1 + self.boundary1, rows)
+        down2 = slice(self.strip2 + self.boundary2, cols)
+        return (
+            up1 if quadrant[0] == "u" else down1,
+            up2 if quadrant[1] == "u" else down2,
+        )
+
+    def quadrant_map(self, quadrant: str) -> np.ndarray:
+        """One quadrant of ``hypermat`` as a standalone array, strips removed.
+
+        A view, not a copy. ``[i, j]`` is the statistic for the top ``i``-th grid
+        cutoff of list 1 against the top ``j``-th of list 2, where "top" follows
+        the quadrant's direction: for ``"uu"`` both run from most up-regulated,
+        for ``"dd"`` both run inward from most down-regulated.
+
+        Empty (shape ``(0, n)``) when the quadrant cannot exist because a list is
+        single-signed.
+        """
+        rows, cols = self.quadrant_slices(quadrant)
+        return self.hypermat[rows, cols]
+
+    def rank_cutoffs(self, quadrant: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Gene-count axis labels for :meth:`quadrant_map`.
+
+        Returns ``(cutoffs1, cutoffs2)``: how many genes deep into each list the
+        corresponding row/column of the quadrant reaches. Use these as tick
+        labels -- element ``k`` labels row/column ``k`` of
+        ``quadrant_map(quadrant)``.
+
+        An up cutoff counts genes from the most up-regulated end, matching
+        ``len(genelist(q).list1)``. A down cutoff is a *suffix* length counted
+        from the most down-regulated end, so both axes measure distance from the
+        quadrant's own origin.
+        """
+        rows, cols = self.quadrant_slices(quadrant)
+        prefix = np.arange(1, self.n_genes + 1, self.stepsize)
+        shape = self.hypermat.shape
+
+        def axis(sl: slice, limit: int, strip: int, is_up: bool) -> np.ndarray:
+            indices = np.arange(*sl.indices(limit))
+            if is_up:
+                # Up block: row k is the grid point k, a prefix of the list.
+                return prefix[indices]
+            # Down block: the same offset core.py uses to build the gene lists,
+            # turned into the length of the suffix it selects.
+            return self.n_genes - prefix[indices - strip] + 1
+
+        return (
+            axis(rows, shape[0], self.strip1, quadrant[0] == "u"),
+            axis(cols, shape[1], self.strip2, quadrant[1] == "u"),
+        )
+
+    def quadrant_peaks(self) -> dict:
+        """``{quadrant: max statistic}`` for all four quadrants.
+
+        ``nan`` for a quadrant that cannot exist. Useful for ranking concordant
+        (``uu``, ``dd``) against discordant (``ud``, ``du``) signal.
+        """
+        peaks = {}
+        for quadrant in QUADRANTS:
+            block = self.quadrant_map(quadrant)
+            peaks[quadrant] = (
+                float(np.nanmax(block)) if block.size else float("nan")
+            )
+        return peaks
+
 
 def _is_sequence(obj) -> bool:
     return hasattr(obj, "__len__") and not isinstance(obj, (str, bytes))

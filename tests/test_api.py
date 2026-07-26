@@ -609,6 +609,101 @@ def test_boundary_zero_gives_no_strip(lists):
 
 
 # --------------------------------------------------------------------------
+# Array access for custom plotting
+# --------------------------------------------------------------------------
+
+
+def test_quadrant_map_matches_manual_slicing(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2, log10=True)
+    hm = result.hypermat
+    expected = {
+        "uu": hm[: result.boundary1, : result.boundary2],
+        "dd": hm[result.strip1 + result.boundary1 :, result.strip2 + result.boundary2 :],
+        "ud": hm[: result.boundary1, result.strip2 + result.boundary2 :],
+        "du": hm[result.strip1 + result.boundary1 :, : result.boundary2],
+    }
+    for quadrant, want in expected.items():
+        np.testing.assert_array_equal(result.quadrant_map(quadrant), want)
+
+
+def test_quadrant_map_excludes_the_nan_strip(lists):
+    """A quadrant pulled out on its own must be fully populated."""
+    l1, l2 = lists
+    result = rrho2(l1, l2, boundary=0.25)
+    for quadrant in QUADRANTS:
+        block = result.quadrant_map(quadrant)
+        assert block.size > 0
+        assert not np.isnan(block).any(), quadrant
+    # The four quadrants tile every non-nan cell exactly once.
+    total = sum(result.quadrant_map(q).size for q in QUADRANTS)
+    assert total == int(np.sum(~np.isnan(result.hypermat)))
+
+
+def test_rank_cutoffs_agree_with_genelist_sizes(lists):
+    """The axis labels must be the cutoffs the gene lists were read from.
+
+    This pins the down-direction case, where a cutoff is a suffix length rather
+    than a prefix length.
+    """
+    l1, l2 = lists
+    result = rrho2(l1, l2, log10=True)
+    for quadrant in QUADRANTS:
+        rows, cols = result.quadrant_slices(quadrant)
+        cutoffs1, cutoffs2 = result.rank_cutoffs(quadrant)
+        genes = result.genelist(quadrant)
+        block = result.quadrant_map(quadrant)
+        assert len(cutoffs1) == block.shape[0]
+        assert len(cutoffs2) == block.shape[1]
+
+        row, col = genes.peak
+        i, j = row - rows.start, col - cols.start
+        assert cutoffs1[i] == len(genes.list1), quadrant
+        assert cutoffs2[j] == len(genes.list2), quadrant
+
+
+def test_rank_cutoffs_are_valid_list_lengths(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2)
+    for quadrant in QUADRANTS:
+        for axis in result.rank_cutoffs(quadrant):
+            assert axis.min() >= 1
+            assert axis.max() <= result.n_genes
+
+
+def test_quadrant_peaks_match_nanmax_of_each_block(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2, log10=True)
+    peaks = result.quadrant_peaks()
+    assert set(peaks) == set(QUADRANTS)
+    for quadrant, value in peaks.items():
+        assert value == pytest.approx(np.nanmax(result.quadrant_map(quadrant)))
+    # Concordant data: uu/dd dominate ud/du.
+    assert min(peaks["uu"], peaks["dd"]) > max(peaks["ud"], peaks["du"])
+
+
+def test_quadrant_accessors_handle_empty_quadrants(lists):
+    l1, l2 = lists
+    with pytest.warns(RuntimeWarning):
+        result = rrho2((l1[0], np.abs(l1[1])), l2)
+    peaks = result.quadrant_peaks()
+    for quadrant in ("dd", "du"):
+        assert result.quadrant_map(quadrant).size == 0
+        assert np.isnan(peaks[quadrant])
+    for quadrant in ("uu", "ud"):
+        assert result.quadrant_map(quadrant).size > 0
+        assert np.isfinite(peaks[quadrant])
+
+
+def test_quadrant_accessors_reject_bad_names(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2)
+    for method in (result.quadrant_map, result.quadrant_slices, result.rank_cutoffs):
+        with pytest.raises(ValueError, match="quadrant"):
+            method("xx")
+
+
+# --------------------------------------------------------------------------
 # Plotting smoke tests
 # --------------------------------------------------------------------------
 
