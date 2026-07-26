@@ -184,6 +184,32 @@ hypergeometric call. The correction shifts the peak `-log(p)` by well under 1%,
 so it does not change interpretation, which is why it is opt-in rather than the
 default: matching published RRHO2 output is the more useful default.
 
+### 10. `drop_nan` (default: `False`, matching R)
+
+R stops with `"NA value exists in list1, please remove them."` The port does the
+same by default, so this is an addition rather than a behaviour change.
+
+`drop_nan=True` drops the offending genes instead. The semantics matter:
+
+- A gene whose score is `nan` in **either** list is dropped from **both**,
+  because RRHO2 ranks one shared gene set twice and a gene can only be ranked if
+  it has a real score on both sides. `_drop_nan_genes` takes the union of the two
+  `nan` sets.
+- Dropping keys on the **identifier**, not the row position, since the two lists
+  need not arrive in the same order.
+- The hypergeometric population is the reduced size. `stepsize` also re-derives
+  from it when left at its default.
+
+The guarantee that pins all of this down is
+`test_drop_nan_equals_pre_filtering_by_hand`: running with `drop_nan=True` gives
+bit-identical output to filtering the genes out before calling `rrho2`. That is
+what keeps p-values calibrated — the alternative (holes punched in an `n`-gene
+map) would test overlaps against a universe containing genes the map cannot rank.
+
+The trade-off is that `drop_nan=True` is mildly conservative: a gene measured
+cleanly in list 1 is discarded if list 2 lacks it. `result.n_dropped` and
+`result.n_genes` report what happened.
+
 ## Performance
 
 Same machine, same synthetic data, `method="hyper"`, defaults otherwise.

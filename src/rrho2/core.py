@@ -69,6 +69,10 @@ class RRHO2Result:
     boundary2: int
     strip1: int
     strip2: int
+    #: Genes ranked in the map, after any ``drop_nan`` removal.
+    n_genes: int = 0
+    #: Genes discarded because their score was missing in one or both lists.
+    n_dropped: int = 0
     counts: Optional[np.ndarray] = field(default=None, repr=False)
 
     def genelist(self, quadrant: str) -> QuadrantGenes:
@@ -122,15 +126,51 @@ def _as_gene_list(obj, argname: str) -> Tuple[np.ndarray, np.ndarray]:
     )
 
 
-def _validate(names: np.ndarray, values: np.ndarray, argname: str) -> None:
+def _validate(
+    names: np.ndarray, values: np.ndarray, argname: str, drop_nan: bool = False
+) -> None:
     if len(names) == 0:
         raise ValueError(f"{argname} is empty")
     unique, counts = np.unique(names, return_counts=True)
     if np.any(counts > 1):
         dup = unique[counts > 1][:5]
         raise ValueError(f"Non-unique gene identifier found in {argname}: {list(dup)}")
-    if np.any(np.isnan(values)):
-        raise ValueError(f"NA value exists in {argname}, please remove them.")
+    if not drop_nan and np.any(np.isnan(values)):
+        n_nan = int(np.sum(np.isnan(values)))
+        raise ValueError(
+            f"NA value exists in {argname} ({n_nan} of {len(values)}). Remove them, "
+            "or pass drop_nan=True to drop those genes from both lists."
+        )
+
+
+def _drop_nan_genes(
+    names1: np.ndarray,
+    values1: np.ndarray,
+    names2: np.ndarray,
+    values2: np.ndarray,
+):
+    """Drop genes whose score is ``nan`` in *either* list, from *both* lists.
+
+    RRHO2 ranks the same gene set twice, so a gene can only be kept if it has a
+    real score on both sides. Matching is by identifier, not position, because
+    the two lists need not be in the same order.
+    """
+    bad = set(names1[np.isnan(values1)].tolist())
+    bad |= set(names2[np.isnan(values2)].tolist())
+    if not bad:
+        return names1, values1, names2, values2, 0
+
+    keep1 = np.array([name not in bad for name in names1.tolist()], dtype=bool)
+    keep2 = np.array([name not in bad for name in names2.tolist()], dtype=bool)
+    names1, values1 = names1[keep1], values1[keep1]
+    names2, values2 = names2[keep2], values2[keep2]
+
+    if len(names1) == 0:
+        raise ValueError(
+            "Every gene has a missing score in at least one list; nothing is left "
+            "to compare."
+        )
+    return names1, values1, names2, values2, len(bad)
 
 
 def _peak_pixel(mat: np.ndarray, rows: slice, cols: slice) -> Tuple[int, int]:
@@ -168,6 +208,7 @@ def rrho2(
     population_offset: int = 1,
     log_space_padjust: bool = True,
     return_counts: bool = False,
+    drop_nan: bool = False,
 ) -> RRHO2Result:
     """Build the RRHO2 overlap map for two ranked gene lists.
 
@@ -201,6 +242,13 @@ def rrho2(
         Set ``False`` to reproduce R's behaviour exactly.
     return_counts
         Also return the raw overlap counts on the un-split grid.
+    drop_nan
+        By default a missing score is an error. Set ``True`` to drop genes with a
+        ``nan`` score instead. Because RRHO2 requires both lists to rank the same
+        genes, a gene missing from *either* list is dropped from *both*, and the
+        map is built on the surviving intersection. The hypergeometric population
+        is the reduced size, so p-values stay correctly calibrated. The number
+        dropped is reported as ``result.n_dropped``.
 
     Returns
     -------
@@ -229,10 +277,16 @@ def rrho2(
 
     names1, values1 = _as_gene_list(list1, "list1")
     names2, values2 = _as_gene_list(list2, "list2")
-    _validate(names1, values1, "list1")
-    _validate(names2, values2, "list2")
+    _validate(names1, values1, "list1", drop_nan)
+    _validate(names2, values2, "list2", drop_nan)
     if set(names1.tolist()) != set(names2.tolist()):
         raise ValueError("The gene names of the two lists must be identical.")
+
+    n_dropped = 0
+    if drop_nan:
+        names1, values1, names2, values2, n_dropped = _drop_nan_genes(
+            names1, values1, names2, values2
+        )
 
     # Descending score; a stable sort leaves ties in input order, as R's
     # order(decreasing = TRUE) does.
@@ -345,6 +399,8 @@ def rrho2(
         boundary2=boundary2,
         strip1=strip1,
         strip2=strip2,
+        n_genes=n,
+        n_dropped=n_dropped,
         counts=normal["counts"] if return_counts else None,
     )
 

@@ -62,13 +62,36 @@ Two gene lists, each pairing an identifier with a score:
 
 - The score is conventionally `-log10(pvalue) * sign(effectSize)`, so
   up-regulated genes score positive and down-regulated genes negative.
-- No missing values.
+- No missing values, unless you pass `drop_nan=True` (see below).
 - Both lists must contain exactly the same identifiers. Order does not matter.
 - Each list must contain both positive and negative scores, otherwise the map
   has no up- or no down-regulated quadrant.
 
 A list may be a pandas `DataFrame` (identifiers in the first column, scores in
 the second), an `(n, 2)` array, or a `(names, values)` pair.
+
+### Missing values
+
+By default a `nan` score is an error, since a missing value has no rank. To drop
+those genes instead:
+
+```python
+result = rrho2(list1, list2, drop_nan=True)
+print(result.n_dropped, "genes dropped;", result.n_genes, "ranked")
+```
+
+Because RRHO2 ranks the *same* gene set twice, a gene whose score is missing in
+**either** list is dropped from **both**, and the map is built on the surviving
+intersection. This is exactly equivalent to never having passed those genes: the
+hypergeometric population becomes the reduced size, so p-values stay correctly
+calibrated rather than being computed against a universe that includes genes the
+map cannot rank.
+
+Note that this makes `drop_nan=True` slightly conservative — a gene measured
+cleanly in list 1 is still discarded if list 2 is missing it. That is the
+statistically honest choice for a rank-rank method, but if one list is much
+patchier than the other, check `result.n_dropped` before reading much into the
+map.
 
 ## Quick start
 
@@ -118,6 +141,8 @@ result.venn("dd")
   `.sizes`, and `.peak` (the pixel it was read from).
 - `genelist(quadrant)` — the same, by name.
 - `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` — the grid geometry.
+- `n_genes`, `n_dropped` — genes actually ranked, and how many `drop_nan`
+  discarded.
 
 ## Key parameters
 
@@ -129,6 +154,7 @@ result.venn("dd")
 | `multiple_testing` | `"none"` | `"none"`, `"BH"`, or `"BY"` |
 | `boundary` | `0.1` | width of the separator strip, as a fraction |
 | `labels` | `None` | two names used to annotate plots |
+| `drop_nan` | `False` | drop genes with a missing score instead of erroring |
 | `population_offset` | `1` | `1` matches R; `0` is statistically correct |
 | `log_space_padjust` | `True` | avoid underflow in BH/BY; `False` matches R |
 

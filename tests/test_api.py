@@ -88,6 +88,161 @@ def test_rejects_nan_scores(lists):
         rrho2((l1[0], values), l2)
 
 
+def test_nan_error_mentions_the_opt_out(lists):
+    l1, l2 = lists
+    values = l1[1].copy()
+    values[[3, 9]] = np.nan
+    with pytest.raises(ValueError, match=r"\(2 of \d+\).*drop_nan=True"):
+        rrho2((l1[0], values), l2)
+
+
+# --------------------------------------------------------------------------
+# drop_nan
+# --------------------------------------------------------------------------
+
+
+def test_drop_nan_equals_pre_filtering_by_hand(lists):
+    """The central guarantee: dropping is equivalent to never passing the gene.
+
+    This is what keeps the p-values calibrated -- the hypergeometric population
+    becomes the reduced size, rather than the map being built on n genes with
+    holes punched in it.
+    """
+    l1, l2 = lists
+    names, values1 = l1
+    values2 = l2[1]
+    missing = [2, 17, 40]
+
+    with_nan = values1.copy()
+    with_nan[missing] = np.nan
+    dropped = rrho2((names, with_nan), (names, values2), drop_nan=True)
+
+    keep = np.ones(len(names), dtype=bool)
+    keep[missing] = False
+    manual = rrho2((names[keep], values1[keep]), (names[keep], values2[keep]))
+
+    np.testing.assert_allclose(dropped.hypermat, manual.hypermat, equal_nan=True)
+    assert dropped.stepsize == manual.stepsize
+    assert dropped.n_genes == manual.n_genes == len(names) - len(missing)
+    assert dropped.n_dropped == len(missing)
+    for quadrant in QUADRANTS:
+        np.testing.assert_array_equal(
+            dropped.genelist(quadrant).overlap, manual.genelist(quadrant).overlap
+        )
+
+
+def test_drop_nan_removes_gene_from_both_lists(lists):
+    """A gene missing in one list cannot be ranked in the other either."""
+    l1, l2 = lists
+    names = l1[0]
+    with_nan = l1[1].copy()
+    with_nan[[5, 6]] = np.nan
+    gone = set(names[[5, 6]].tolist())
+
+    result = rrho2((names, with_nan), (names, l2[1]), drop_nan=True)
+    assert result.n_dropped == 2
+    for quadrant in QUADRANTS:
+        genes = result.genelist(quadrant)
+        assert not (set(genes.list1) & gone)
+        assert not (set(genes.list2) & gone), "dropped from list1 only"
+
+
+def test_drop_nan_takes_the_union_across_both_lists(lists):
+    l1, l2 = lists
+    names = l1[0]
+    a = l1[1].copy()
+    b = l2[1].copy()
+    a[[1, 2, 3]] = np.nan
+    b[[3, 4]] = np.nan  # index 3 overlaps, so the union is {1, 2, 3, 4}
+
+    result = rrho2((names, a), (names, b), drop_nan=True)
+    assert result.n_dropped == 4
+    assert result.n_genes == len(names) - 4
+
+
+def test_drop_nan_matches_by_name_not_position(lists):
+    """The lists need not be in the same order, so dropping must key on names."""
+    l1, l2 = lists
+    names = l1[0]
+    with_nan = l1[1].copy()
+    with_nan[[7, 8]] = np.nan
+
+    rng = np.random.default_rng(2)
+    perm = rng.permutation(len(names))
+    shuffled = rrho2(
+        (names, with_nan), (names[perm], l2[1][perm]), drop_nan=True
+    )
+    ordered = rrho2((names, with_nan), (names, l2[1]), drop_nan=True)
+
+    assert shuffled.n_dropped == ordered.n_dropped == 2
+    np.testing.assert_allclose(shuffled.hypermat, ordered.hypermat, equal_nan=True)
+
+
+def test_drop_nan_is_a_no_op_without_nans(lists):
+    l1, l2 = lists
+    baseline = rrho2(l1, l2)
+    with_flag = rrho2(l1, l2, drop_nan=True)
+    np.testing.assert_array_equal(with_flag.hypermat, baseline.hypermat)
+    assert with_flag.n_dropped == 0
+    assert with_flag.n_genes == len(l1[0])
+
+
+def test_drop_nan_reports_counts_by_default(lists):
+    """n_genes/n_dropped are populated even when drop_nan is not used."""
+    l1, l2 = lists
+    result = rrho2(l1, l2)
+    assert result.n_genes == len(l1[0])
+    assert result.n_dropped == 0
+
+
+def test_drop_nan_rederives_default_stepsize(lists):
+    """A smaller surviving list means a finer default grid, not the original one."""
+    l1, l2 = lists
+    names, values1 = l1
+    n = len(names)
+    with_nan = values1.copy()
+    with_nan[: n // 4] = np.nan
+    surviving = n - n // 4
+
+    result = rrho2((names, with_nan), (names, l2[1]), drop_nan=True)
+    assert result.n_genes == surviving
+    assert result.stepsize == default_step_size(surviving, surviving)
+    # An explicit stepsize still wins.
+    pinned = rrho2((names, with_nan), (names, l2[1]), drop_nan=True, stepsize=25)
+    assert pinned.stepsize == 25
+
+
+def test_drop_nan_rejects_all_missing(lists):
+    l1, l2 = lists
+    with pytest.raises(ValueError, match="nothing is left to compare"):
+        rrho2((l1[0], np.full(len(l1[0]), np.nan)), l2, drop_nan=True)
+
+
+def test_drop_nan_still_enforces_other_validation(lists):
+    """Duplicates and mismatched gene sets are unaffected by drop_nan."""
+    l1, l2 = lists
+    dup = l1[0].copy()
+    dup[1] = dup[0]
+    with pytest.raises(ValueError, match="Non-unique gene identifier"):
+        rrho2((dup, l1[1]), l2, drop_nan=True)
+
+    other = l2[0].copy()
+    other[0] = "NotInList1"
+    with pytest.raises(ValueError, match="must be identical"):
+        rrho2(l1, (other, l2[1]), drop_nan=True)
+
+
+def test_drop_nan_with_pandas_na(lists):
+    pd = pytest.importorskip("pandas")
+    l1, l2 = lists
+    frame1 = pd.DataFrame({"Genes": l1[0], "DDE": l1[1]})
+    frame1.loc[[3, 11], "DDE"] = np.nan
+    frame2 = pd.DataFrame({"Genes": l2[0], "DDE": l2[1]})
+    result = rrho2(frame1, frame2, drop_nan=True)
+    assert result.n_dropped == 2
+    assert result.n_genes == len(l1[0]) - 2
+
+
 def test_rejects_mismatched_gene_sets(lists):
     l1, l2 = lists
     other = l2[0].copy()
