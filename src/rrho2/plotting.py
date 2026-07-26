@@ -103,6 +103,12 @@ def heatmap(
         ax.set_xlabel(labels[0])
         ax.set_ylabel(labels[1])
 
+    if getattr(result, "log_ranks", False):
+        # Pixels are drawn equal-width, which is the point: it magnifies the top
+        # ranks. But the axis is then nonlinear in rank, so say so rather than
+        # letting the map be read as evenly spaced.
+        ax.set_title("rank axes are log-spaced", fontsize=8, color="0.4", pad=4)
+
     if colorbar:
         if result.method == "hyper":
             title = "-log10(P-value)" if result.log10 else "-log(P-value)"

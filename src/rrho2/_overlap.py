@@ -6,10 +6,17 @@ This is the Python counterpart of ``R/numericListOverlap.R`` and
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 from scipy.stats import hypergeom
 
-__all__ = ["default_step_size", "step_prefixes", "numeric_list_overlap"]
+__all__ = [
+    "default_step_size",
+    "step_prefixes",
+    "log_prefixes",
+    "numeric_list_overlap",
+]
 
 #: Survival probabilities at or below this are recomputed in log space. Set
 #: comfortably above the smallest normal float64 (~2.2e-308) so that denormals,
@@ -27,6 +34,44 @@ def step_prefixes(n: int, stepsize: int) -> np.ndarray:
     if stepsize < 1:
         raise ValueError("stepsize must be a positive integer")
     return np.arange(1, n + 1, stepsize, dtype=np.int64)
+
+
+def log_prefixes(n: int, n_bins: Optional[int] = None) -> np.ndarray:
+    """Prefix lengths spaced geometrically, densest at the top of the ranking.
+
+    Linear spacing gives the top of the list -- where RRHO signal usually lives --
+    a single grid point, while spending most of the grid on the uninformative
+    tail. Geometric spacing inverts that: consecutive cutoffs near rank 1 differ
+    by one gene, and near rank ``n`` by hundreds.
+
+    Parameters
+    ----------
+    n
+        Length of the ranked list.
+    n_bins
+        Requested number of grid points. Defaults to the count a linear grid
+        would use, so the map costs the same to compute. The result may be
+        shorter, because duplicate integer cutoffs are collapsed.
+
+    Returns
+    -------
+    ndarray
+        Strictly increasing prefix lengths, always starting at 1 and ending at
+        the largest value ``<= n``.
+    """
+    if n < 1:
+        raise ValueError("n must be at least 1")
+    if n_bins is None:
+        n_bins = len(step_prefixes(n, default_step_size(n, n)))
+    if n_bins < 1:
+        raise ValueError("n_bins must be at least 1")
+    if n == 1:
+        return np.array([1], dtype=np.int64)
+
+    # geomspace hits 1 and n exactly; rounding then collapses near-duplicates at
+    # the dense end, so the grid is shorter than n_bins for small n.
+    raw = np.geomspace(1.0, float(n), num=min(n_bins, n))
+    return np.unique(np.rint(raw).astype(np.int64))
 
 
 def _overlap_counts(
@@ -128,10 +173,11 @@ def _log_odds(
 def numeric_list_overlap(
     names1,
     names2,
-    stepsize: int,
+    stepsize: Optional[int] = None,
     method: str = "hyper",
     offset: float = 1.0,
     population_offset: int = 1,
+    prefixes: Optional[np.ndarray] = None,
 ):
     """Overlap statistic over the strided grid of prefixes of two ranked lists.
 
@@ -141,7 +187,12 @@ def numeric_list_overlap(
         Element identifiers, each already sorted by its own ranking score. Both
         must contain the same identifiers.
     stepsize
-        Number of elements between successive grid points.
+        Number of elements between successive grid points. Ignored when
+        ``prefixes`` is given; one of the two is required.
+    prefixes
+        Explicit, strictly increasing prefix lengths to evaluate, for a
+        non-uniform grid (see :func:`log_prefixes`). Both lists use the same
+        grid, as with ``stepsize``.
     method
         ``"hyper"`` for ``-log`` hypergeometric p-values, ``"fisher"`` for log
         odds ratios.
@@ -161,8 +212,19 @@ def numeric_list_overlap(
     if len(names2) != n:
         raise ValueError("names1 and names2 must have the same length")
 
-    prefix1 = step_prefixes(n, stepsize)
-    prefix2 = step_prefixes(n, stepsize)
+    if prefixes is not None:
+        prefix1 = np.asarray(prefixes, dtype=np.int64)
+        if prefix1.ndim != 1 or prefix1.size == 0:
+            raise ValueError("prefixes must be a non-empty 1-D array")
+        if np.any(np.diff(prefix1) <= 0):
+            raise ValueError("prefixes must be strictly increasing")
+        if prefix1[0] < 1 or prefix1[-1] > n:
+            raise ValueError(f"prefixes must lie in [1, {n}]")
+    elif stepsize is not None:
+        prefix1 = step_prefixes(n, stepsize)
+    else:
+        raise ValueError("pass either stepsize or prefixes")
+    prefix2 = prefix1
     counts = _overlap_counts(names1, names2, prefix1, prefix2)
 
     if method == "hyper":

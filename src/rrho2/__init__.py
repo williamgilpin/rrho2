@@ -16,7 +16,12 @@ using an updated rank-rank hypergeometric overlap approach.
 """
 
 from ._multitest import adjust_neglog_pvalues, legacy_adjust_neglog_pvalues
-from ._overlap import default_step_size, numeric_list_overlap, step_prefixes
+from ._overlap import (
+    default_step_size,
+    log_prefixes,
+    numeric_list_overlap,
+    step_prefixes,
+)
 from .core import (
     QUADRANTS,
     QuadrantGenes,
@@ -36,6 +41,7 @@ __all__ = [
     "default_step_size",
     "numeric_list_overlap",
     "step_prefixes",
+    "log_prefixes",
     "adjust_neglog_pvalues",
     "legacy_adjust_neglog_pvalues",
     "__version__",

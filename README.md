@@ -83,7 +83,7 @@ result.venn("dd")
 | `genelist(q)` | the same, by name |
 | `quadrant_map(q)`, `rank_cutoffs(q)`, `quadrant_peaks()` | one quadrant as an array plus its axis labels, for plotting it yourself |
 | `n_genes`, `n_dropped`, `n_unshared` | genes ranked, and how many were dropped as missing or unshared |
-| `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2` | grid geometry |
+| `stepsize`, `boundary1`, `boundary2`, `strip1`, `strip2`, `prefixes` | grid geometry and the rank cutoffs used |
 
 ## Key parameters
 
@@ -95,6 +95,7 @@ result.venn("dd")
 | `multiple_testing` | `"none"` | `"none"`, `"BH"`, or `"BY"` |
 | `boundary` | `0.1` | width of the separator strip, as a fraction |
 | `labels` | `None` | two names used to annotate plots |
+| `log_ranks` | `False` | space rank cutoffs geometrically, for resolution at the top of the ranking |
 | `drop_nan` | `False` | drop genes with a missing score instead of erroring |
 | `population_offset` | `1` | `1` matches R; `0` is statistically correct |
 | `log_space_padjust` | `True` | avoid underflow in BH/BY; `False` matches R |

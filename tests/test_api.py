@@ -729,3 +729,126 @@ def test_heatmap_and_venn_render(lists):
 
     with pytest.raises(ValueError, match="quadrant"):
         result.venn("xx")
+
+
+# --------------------------------------------------------------------------
+# log_ranks: geometrically spaced rank cutoffs
+# --------------------------------------------------------------------------
+
+
+def test_log_prefixes_properties():
+    from rrho2._overlap import log_prefixes
+
+    for n in (1, 2, 5, 50, 2000, 20000):
+        p = log_prefixes(n)
+        assert p[0] == 1, n
+        assert p[-1] <= n, n
+        assert (np.diff(p) > 0).all(), n            # strictly increasing
+        assert p.dtype == np.int64
+    # Dense at the top, coarse in the tail.
+    p = log_prefixes(20000)
+    assert np.diff(p)[0] == 1
+    assert np.diff(p)[-1] > 100
+    assert p[-1] == 20000
+
+
+def test_log_prefixes_rejects_bad_input():
+    from rrho2._overlap import log_prefixes
+
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        log_prefixes(0)
+    with pytest.raises(ValueError, match="n_bins must be at least 1"):
+        log_prefixes(100, n_bins=0)
+
+
+def test_log_ranks_concentrates_resolution_at_the_top(lists):
+    l1, l2 = lists
+    linear = rrho2(l1, l2, log10=True)
+    logged = rrho2(l1, l2, log10=True, log_ranks=True)
+    assert logged.log_ranks and not linear.log_ranks
+
+    lin_cut, _ = linear.rank_cutoffs("uu")
+    log_cut, _ = logged.rank_cutoffs("uu")
+    top = max(1, linear.n_genes // 8)
+    assert (log_cut <= top).sum() > (lin_cut <= top).sum()
+    # Costs no more than the linear grid.
+    assert logged.hypermat.size <= linear.hypermat.size * 1.05
+
+
+def test_log_ranks_cutoffs_still_match_genelists(lists):
+    """The invariant that caught the earlier suffix bug, now on a log grid."""
+    l1, l2 = lists
+    result = rrho2(l1, l2, log10=True, log_ranks=True)
+    for quadrant in QUADRANTS:
+        rows, cols = result.quadrant_slices(quadrant)
+        cutoffs1, cutoffs2 = result.rank_cutoffs(quadrant)
+        genes = result.genelist(quadrant)
+        row, col = genes.peak
+        assert cutoffs1[row - rows.start] == len(genes.list1), quadrant
+        assert cutoffs2[col - cols.start] == len(genes.list2), quadrant
+
+
+def test_log_ranks_prefixes_are_recorded(lists):
+    l1, l2 = lists
+    result = rrho2(l1, l2, log_ranks=True)
+    p1, p2 = result.prefixes
+    assert p1[0] == 1 and (np.diff(p1) > 0).all()
+    assert p1[-1] <= result.n_genes
+    # rank_cutoffs reads this grid, not stepsize.
+    cutoffs1, _ = result.rank_cutoffs("uu")
+    np.testing.assert_array_equal(cutoffs1, p1[: len(cutoffs1)])
+
+
+def test_log_ranks_statistic_matches_a_direct_call_at_shared_cutoffs(lists):
+    """Same cutoff must give the same p-value regardless of grid spacing.
+
+    The statistic depends only on (a, b, count, n), so a cutoff appearing in both
+    grids must agree. This catches any mis-indexing of the non-uniform grid.
+    """
+    from scipy.stats import hypergeom
+
+    l1, l2 = lists
+    result = rrho2(l1, l2, log_ranks=True, return_counts=True)
+    p1, p2 = result.prefixes
+    n = result.n_genes
+    counts = result.counts
+    for i in (0, 3, len(p1) // 2, len(p1) - 1):
+        for j in (0, len(p2) // 2, len(p2) - 1):
+            expected = -hypergeom.logsf(counts[i, j] - 1, n + 1, p1[i], p2[j])
+            # Read the cell out of the uu block where the grid is un-permuted.
+            if i < result.boundary1 and j < result.boundary2:
+                np.testing.assert_allclose(
+                    result.hypermat[i, j], expected, rtol=1e-10, atol=1e-10
+                )
+
+
+def test_log_ranks_finds_the_same_signal(lists):
+    """Concordant data stays concordant under log spacing."""
+    l1, l2 = lists
+    peaks = rrho2(l1, l2, log10=True, log_ranks=True).quadrant_peaks()
+    assert min(peaks["uu"], peaks["dd"]) > max(peaks["ud"], peaks["du"])
+
+
+def test_log_ranks_composes_with_other_options(lists):
+    l1, l2 = lists
+    for kwargs in (
+        {"method": "fisher"},
+        {"multiple_testing": "BH"},
+        {"boundary": 0.0},
+        {"log10": True, "population_offset": 0},
+    ):
+        result = rrho2(l1, l2, log_ranks=True, **kwargs)
+        assert result.log_ranks
+        assert np.isfinite(result.hypermat[~np.isnan(result.hypermat)]).all()
+
+
+def test_log_ranks_plots(lists):
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    l1, l2 = lists
+    result = rrho2(l1, l2, log10=True, log_ranks=True, labels=("a", "b"))
+    result.heatmap()
+    result.venn("uu")
+    plt.close("all")

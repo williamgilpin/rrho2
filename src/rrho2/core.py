@@ -12,7 +12,12 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from ._multitest import adjust_neglog_pvalues, legacy_adjust_neglog_pvalues
-from ._overlap import default_step_size, numeric_list_overlap, step_prefixes
+from ._overlap import (
+    default_step_size,
+    log_prefixes,
+    numeric_list_overlap,
+    step_prefixes,
+)
 
 __all__ = ["rrho2", "RRHO2Result", "QuadrantGenes", "QUADRANTS"]
 
@@ -76,6 +81,13 @@ class RRHO2Result:
     n_dropped: int = 0
     #: Genes discarded because they appeared in only one of the two lists.
     n_unshared: int = 0
+    #: True when the rank cutoffs are geometrically rather than uniformly spaced.
+    log_ranks: bool = False
+    #: The rank cutoffs actually evaluated, for list 1 and list 2. Uniform unless
+    #: ``log_ranks``; the single source of truth for :meth:`rank_cutoffs`.
+    prefixes: Optional[Tuple[np.ndarray, np.ndarray]] = field(
+        default=None, repr=False
+    )
     counts: Optional[np.ndarray] = field(default=None, repr=False)
 
     def genelist(self, quadrant: str) -> QuadrantGenes:
@@ -143,10 +155,17 @@ class RRHO2Result:
         quadrant's own origin.
         """
         rows, cols = self.quadrant_slices(quadrant)
-        prefix = np.arange(1, self.n_genes + 1, self.stepsize)
         shape = self.hypermat.shape
+        # Read the stored grid rather than re-deriving it from stepsize, which
+        # would be wrong whenever the spacing is not uniform (log_ranks=True).
+        if self.prefixes is not None:
+            prefix1, prefix2 = self.prefixes
+        else:
+            prefix1 = prefix2 = np.arange(1, self.n_genes + 1, self.stepsize)
 
-        def axis(sl: slice, limit: int, strip: int, is_up: bool) -> np.ndarray:
+        def axis(
+            sl: slice, limit: int, strip: int, is_up: bool, prefix: np.ndarray
+        ) -> np.ndarray:
             indices = np.arange(*sl.indices(limit))
             if is_up:
                 # Up block: row k is the grid point k, a prefix of the list.
@@ -156,8 +175,8 @@ class RRHO2Result:
             return self.n_genes - prefix[indices - strip] + 1
 
         return (
-            axis(rows, shape[0], self.strip1, quadrant[0] == "u"),
-            axis(cols, shape[1], self.strip2, quadrant[1] == "u"),
+            axis(rows, shape[0], self.strip1, quadrant[0] == "u", prefix1),
+            axis(cols, shape[1], self.strip2, quadrant[1] == "u", prefix2),
         )
 
     def quadrant_peaks(self) -> dict:
@@ -328,6 +347,7 @@ def rrho2(
     log_space_padjust: bool = True,
     return_counts: bool = False,
     drop_nan: bool = False,
+    log_ranks: bool = False,
 ) -> RRHO2Result:
     """Build the RRHO2 overlap map for two ranked gene lists.
 
@@ -342,13 +362,52 @@ def rrho2(
         ``result.n_unshared``. Missing scores are an error unless ``drop_nan``.
     stepsize
         Elements between successive overlap tests. Defaults to
-        ``ceil(sqrt(n))``.
+        ``ceil(sqrt(n))``. Ignored when ``log_ranks=True``.
+    log_ranks
+        Space the rank cutoffs geometrically instead of uniformly, so the grid is
+        dense at the top of each ranking and coarse in the tail. Useful when the
+        overlap is concentrated in the first few hundred genes, which a linear
+        grid compresses into one or two pixels. The number of grid points, and so
+        the cost, is unchanged.
+
+        The resulting ``hypermat`` is **not** evenly spaced in rank, so plot it
+        against ``rank_cutoffs()`` rather than pixel index, and do not compare it
+        cell-by-cell with a linear map. ``result.prefixes`` holds the cutoffs
+        actually used.
     labels
         Two names used to annotate plots.
     log10
         Report ``-log10(p)`` instead of ``-log(p)``.
     multiple_testing
-        ``"none"``, ``"BH"``, or ``"BY"``. Only valid for ``method="hyper"``.
+        Correct the p-values for the fact that the map runs one hypergeometric
+        test per pixel -- a few thousand of them -- so the most extreme cell
+        looks impressive by chance alone. Only valid for ``method="hyper"``.
+
+        - ``"none"`` (default): raw, uncorrected p-values, as published RRHO2
+          analyses use. Judge significance against the size of the grid; see the
+          note on dependence below.
+        - ``"BH"``: **Benjamini-Hochberg**, controls the *false discovery rate* --
+          the expected share of flagged pixels that are false positives. The
+          usual choice when you want a corrected map.
+        - ``"BY"``: **Benjamini-Yekutieli**, also controls the false discovery
+          rate but stays valid under arbitrary dependence between tests. It
+          scales every p-value by an extra ``sum(1/1..m)`` (about 8.9 for a
+          64x64 grid, growing slowly with grid size), so it is markedly more
+          conservative than ``"BH"``.
+
+        Both are step-up procedures: rank the ``m`` p-values, scale the ``k``-th
+        smallest by ``m/k`` (times that extra factor for BY), then enforce
+        monotonicity. Adjusted values are always larger than raw ones, so
+        ``hypermat`` gets uniformly smaller.
+
+        A caveat specific to RRHO: neighbouring pixels share almost all of their
+        genes, so the tests are strongly dependent, not independent. BH assumes
+        independence (or positive regression dependence) and BY is the
+        dependence-robust alternative, but neither models this particular
+        structure well -- BH is anti-conservative here and BY is conservative.
+        Treat a corrected map as a guide, not an exact error rate. The
+        correction is applied across the whole grid, before it is split into
+        quadrants.
     boundary
         Width of the white separator strip, as a fraction of the map size.
     method
@@ -423,16 +482,21 @@ def rrho2(
         stepsize = default_step_size(n, len(names2))
     stepsize = int(stepsize)
 
-    prefix1 = step_prefixes(n, stepsize)
-    prefix2 = step_prefixes(len(names2), stepsize)
+    if log_ranks:
+        prefix1 = log_prefixes(n)
+        prefix2 = log_prefixes(len(names2))
+    else:
+        prefix1 = step_prefixes(n, stepsize)
+        prefix2 = step_prefixes(len(names2), stepsize)
     len1, len2 = len(prefix1), len(prefix2)
 
-    normal = numeric_list_overlap(
-        names1, names2, stepsize, method=method, population_offset=population_offset
-    )
-    flipped = numeric_list_overlap(
-        names1[::-1], names2, stepsize, method=method, population_offset=population_offset
-    )
+    grid = dict(method=method, population_offset=population_offset)
+    if log_ranks:
+        grid["prefixes"] = prefix1
+    else:
+        grid["stepsize"] = stepsize
+    normal = numeric_list_overlap(names1, names2, **grid)
+    flipped = numeric_list_overlap(names1[::-1], names2, **grid)
     hypermat_normal = normal["log_pval"]
     hypermat_flipx = flipped["log_pval"]
 
@@ -547,6 +611,8 @@ def rrho2(
         n_genes=n,
         n_dropped=n_dropped,
         n_unshared=n_unshared,
+        log_ranks=log_ranks,
+        prefixes=(prefix1, prefix2),
         counts=normal["counts"] if return_counts else None,
     )
 
